@@ -1,4 +1,4 @@
-# Certificate Generator
+# GDG Hackathon Certificate Generator
 
 A Streamlit app that generates personalized certificates by adding names to templates based on user types.
 
