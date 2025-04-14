@@ -4,8 +4,6 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import base64
-import xml.etree.ElementTree as ET
-import re
 
 # Set page configuration
 st.set_page_config(
@@ -20,103 +18,135 @@ def load_data():
     data_path = os.path.join(os.path.dirname(__file__), "data", "participants.csv")
     return pd.read_csv(data_path)
 
-# Function to get text dimensions
-def get_text_dimensions(text, font):
-    # For newer Pillow versions
-    if hasattr(font, "getbbox"):
-        bbox = font.getbbox(text)
-        return bbox[2] - bbox[0], bbox[3] - bbox[1]
-    # For older Pillow versions
-    elif hasattr(ImageDraw.Draw(Image.new("RGB", (1, 1))), "textsize"):
-        return ImageDraw.Draw(Image.new("RGB", (1, 1))).textsize(text, font=font)
-    # Fallback
-    else:
-        return len(text) * font.size // 2, font.size
-
-# Function to add text to SVG
-def add_text_to_svg(svg_path, text, output_path):
+# Function to add text to image
+def add_text_to_image(image_path, text, output_path, initial_font_size=450, box_y_percent=0.76, line_spacing_percent=0.15):
     try:
-        print(f"Processing SVG file: {svg_path}")
+        # Open the image
+        image = Image.open(image_path)
         
-        # Read the SVG content
-        with open(svg_path, 'r', encoding='utf-8') as f:
-            svg_content = f.read()
-        print("Successfully read SVG file")
+        # Create a drawing context
+        draw = ImageDraw.Draw(image)
         
-        # Parse the SVG file
-        tree = ET.parse(svg_path)
-        root = tree.getroot()
-        print("Successfully parsed SVG XML")
+        # Get image dimensions
+        width, height = image.size
         
-        # Get dimensions from viewBox if available, else use default width/height
-        viewbox = root.get('viewBox')
-        if viewbox:
-            tokens = viewbox.split()
-            width = float(tokens[2])
-            height = float(tokens[3])
-            print(f"Using viewBox dimensions: {width}x{height}")
-        else:
-            width = float(root.get('width', '1000'))
-            height = float(root.get('height', '1000'))
-            print(f"Using default dimensions: {width}x{height}")
+        # Define text box dimensions (as percentage of image size)
+        box_width = width * 0.55  # 55% of image width
+        box_height = height * 0.15  # 30% of image height
+        box_x = (width - box_width) // 2
+        box_y = height * box_y_percent  # Adjustable by slider
         
-        # Get the absolute path to the font file
-        font_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "fonts", "GoogleSans-Regular.ttf"))
-        print(f"Font path: {font_path}")
+        # Draw the box
+        draw.rectangle(
+            [(box_x, box_y), (box_x + box_width, box_y + box_height)],
+            outline="red",
+            width=0
+        )
         
-        # Check if font file exists. If it does, embed the font as a Base64 data URI.
-        if os.path.exists(font_path):
-            with open(font_path, 'rb') as font_file:
-                font_data = font_file.read()
-            encoded_font = base64.b64encode(font_data).decode('utf-8')
-            font_src = f"data:font/truetype;base64,{encoded_font}"
-        else:
-            print(f"Warning: Font file not found at {font_path}. Falling back to system font Arial")
-            font_src = None
+        # Load font from fonts directory
+        font_path = os.path.join(os.path.dirname(__file__), "fonts", "GoogleSans-Regular.ttf")
         
-        # Create style element with @font-face if font data is available
-        style = ET.Element('style')
-        if font_src:
-            style.text = f"""
-            @font-face {{
-                font-family: 'Google Sans';
-                src: url('{font_src}') format('truetype');
-            }}
-            """
-            print("Created style element with embedded font")
-        else:
-            # Optionally, you could set a fallback font-family in the SVG style
-            style.text = ""
-            print("Created empty style element (no custom font embedded)")
-
-        # Insert the style element at the beginning of the SVG so that it's applied.
-        root.insert(0, style)
-        print("Added style element to SVG")
+        # Function to wrap text and adjust font size
+        def get_wrapped_text(text, font, max_width, max_height, start_font_size):
+            # Start with the initial font size from slider
+            font_size = start_font_size
+            wrapped_lines = []
+            
+            while font_size > 50:  # Minimum font size
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                except Exception as e:
+                    print(f"Error loading font: {str(e)}")
+                    font = ImageFont.load_default()
+                
+                # Split text into words
+                words = text.split()
+                lines = []
+                current_line = []
+                
+                for word in words:
+                    # Try adding the word to current line
+                    test_line = ' '.join(current_line + [word])
+                    if hasattr(font, "getbbox"):
+                        bbox = font.getbbox(test_line)
+                        line_width = bbox[2] - bbox[0]
+                    else:
+                        line_width = draw.textsize(test_line, font=font)[0]
+                    
+                    if line_width <= max_width:
+                        current_line.append(word)
+                    else:
+                        if current_line:
+                            lines.append(' '.join(current_line))
+                        current_line = [word]
+                
+                if current_line:
+                    lines.append(' '.join(current_line))
+                
+                # Check if all lines fit in the height
+                total_height = 0
+                line_heights = []
+                for line in lines:
+                    if hasattr(font, "getbbox"):
+                        bbox = font.getbbox(line)
+                        line_height = bbox[3] - bbox[1]
+                    else:
+                        line_height = draw.textsize(line, font=font)[1]
+                    line_heights.append(line_height)
+                    total_height += line_height
+                
+                # Add spacing between lines based on the spacing percentage
+                if len(lines) > 1:
+                    total_height += sum(line_heights) * line_spacing_percent * (len(lines) - 1)
+                
+                if total_height <= max_height:
+                    return font, lines, line_heights
+                
+                # Reduce font size and try again
+                font_size -= 10
+            
+            # If we get here, use the last successful attempt
+            return font, lines, line_heights
         
-        # Create a text element that uses the custom font (matching the font-family in @font-face)
-        text_element = ET.Element('text', {
-            'x': str(width / 2),
-            'y': str(height * 0.86),
-            'text-anchor': 'middle',
-            'font-family': 'Google Sans',
-            'font-size': '40',
-            'font-weight': 'bold',
-            'fill': 'black'
-        })
-        text_element.text = text
-        print("Created text element")
+        # Get wrapped text with appropriate font size
+        font, wrapped_lines, line_heights = get_wrapped_text(text, None, box_width, box_height, initial_font_size)
         
-        # Append the text element to the SVG
-        root.append(text_element)
-        print("Added text element to SVG")
+        # Calculate total text height including spacing
+        total_height = sum(line_heights)
+        if len(wrapped_lines) > 1:
+            total_height += sum(line_heights) * line_spacing_percent * (len(wrapped_lines) - 1)
         
-        # Save the modified SVG to the output file
-        tree.write(output_path, encoding='utf-8', xml_declaration=True)
-        print(f"Successfully saved modified SVG to {output_path}")
+        # Calculate starting y position to center text block vertically in the box
+        y_offset = box_y + (box_height - total_height) / 2
         
+        # Ensure text stays within the box
+        if y_offset < box_y:
+            y_offset = box_y
+        
+        # Draw each line of text
+        for i, line in enumerate(wrapped_lines):
+            if hasattr(font, "getbbox"):
+                bbox = font.getbbox(line)
+                line_width = bbox[2] - bbox[0]
+            else:
+                line_width = draw.textsize(line, font=font)[0]
+            
+            # Center horizontally in the box
+            x = box_x + (box_width - line_width) / 2
+            
+            # Draw text
+            draw.text((x, y_offset), line, font=font, fill="black")
+            
+            # Move to next line with spacing
+            if i < len(wrapped_lines) - 1:
+                y_offset += line_heights[i] * (1 + line_spacing_percent)
+        
+        # Save the modified image
+        image.save(output_path, "JPEG")
+        return True
     except Exception as e:
-        print(f"Error: {e}")
-
+        print(f"Error adding text to image: {str(e)}")
+        return False
 
 # Main function
 def main():
@@ -125,65 +155,68 @@ def main():
     # Load data
     df = load_data()
     
-    # Get unique types
-    types = df['type'].unique().tolist()
-    
     # Create sidebar
     st.sidebar.header("Settings")
     
-    # Type selector
-    selected_type = st.sidebar.selectbox("Select Certificate Type", types)
-    
-    # Filter names by type
-    filtered_names = df[df['type'] == selected_type]['name'].tolist()
-    
     # Name selector
-    selected_name = st.sidebar.selectbox("Select Your Name", filtered_names)
+    selected_name = st.sidebar.selectbox("Select Your Name", df['name'].tolist())
+    
+    # Get the type for the selected name
+    selected_type = df[df['name'] == selected_name]['type'].iloc[0]
+    
+    # Text customization sliders
+    st.sidebar.header("Text Settings")
+    font_size = st.sidebar.slider("Initial Font Size", 100, 800, 450, 10)
+    y_position = st.sidebar.slider("Vertical Position (%)", 0.5, 0.9, 0.76, 0.01)
+    line_spacing = st.sidebar.slider("Line Spacing (%)", 0.0, 0.5, 0.15, 0.01)
     
     # Certificate preview
-    st.header("Certificate Preview")
+    st.header("Your Certificate")
     
-    template_path = os.path.join(os.path.dirname(__file__), "template", f"{selected_type}.svg")
+    template_path = os.path.join(os.path.dirname(__file__), "template", f"{selected_type}.jpg")
     
     if os.path.exists(template_path):
         # Generate certificate button
         if st.sidebar.button("Generate Certificate"):
             try:
                 print(f"Starting certificate generation for {selected_name}")
-                # Create a temporary file for the modified SVG
-                temp_svg_path = os.path.join(os.path.dirname(__file__), "temp_certificate.svg")
-                add_text_to_svg(template_path, selected_name, temp_svg_path)
                 
-                # Display the SVG
-                with open(temp_svg_path, 'r') as f:
-                    svg_content = f.read()
-                    st.image(svg_content, caption=f"Certificate for {selected_name}", use_column_width=True)
+                # Create a temporary file for the modified image
+                temp_image_path = os.path.join(os.path.dirname(__file__), "temp_certificate.jpg")
                 
-                # Download button
-                with open(temp_svg_path, 'rb') as f:
+                # Add name to the certificate with custom settings
+                if add_text_to_image(
+                    template_path, 
+                    selected_name, 
+                    temp_image_path,
+                    initial_font_size=font_size,
+                    box_y_percent=y_position,
+                    line_spacing_percent=line_spacing
+                ):
+                    # Display the personalized certificate
+                    st.image(temp_image_path, caption=f"Certificate for {selected_name}", use_column_width=True)
+                    
+                    # Add download button
+                    with open(temp_image_path, "rb") as file:
+                        image_bytes = file.read()
+                    
                     st.download_button(
                         label="Download Certificate",
-                        data=f.read(),
-                        file_name=f"{selected_name}_{selected_type}_Certificate.svg",
-                        mime="image/svg+xml"
+                        data=image_bytes,
+                        file_name=f"{selected_name}_{selected_type}_bwai_hackathon_certificate.jpg",
+                        mime="image/jpeg"
                     )
+                else:
+                    st.error("Failed to generate personalized certificate")
                 
                 # Clean up temporary file
-                os.remove(temp_svg_path)
+                os.remove(temp_image_path)
                 print("Successfully completed certificate generation")
             except Exception as e:
                 st.error(f"Error generating certificate: {str(e)}")
                 print(f"Detailed error: {str(e)}")
-        else:
-            try:
-                # Display template preview
-                with open(template_path, 'r') as f:
-                    svg_content = f.read()
-                    st.image(svg_content, caption=f"{selected_type} Certificate Template", use_column_width=True)
-            except Exception as e:
-                st.error(f"Error displaying template: {str(e)}")
     else:
-        st.error(f"Template for {selected_type} not found.")
+        st.error(f"Template for {selected_type} not found at {template_path}")
 
 if __name__ == "__main__":
     main() 
