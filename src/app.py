@@ -194,7 +194,7 @@ def main():
                     line_spacing_percent=line_spacing
                 ):
                     # Display the personalized certificate
-                    st.image(temp_image_path, caption=f"Certificate for {selected_name}", use_column_width=True)
+                    st.image(temp_image_path, caption=f"Certificate for {selected_name}", use_container_width=True)
                     
                     # Add download button
                     with open(temp_image_path, "rb") as file:
